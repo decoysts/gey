@@ -189,26 +189,25 @@ mkdir -p “$FILES_DIR”
 chown -R apache:apache “$FILES_DIR” 2>/dev/null || chown -R www-data:www-data “$FILES_DIR” 2>/dev/null || true
 chmod 775 “$FILES_DIR”
 
-cat > “$WEB_ROOT/index.php” <<‘PHPEOF’
+python3 - “$WEB_ROOT/index.php” <<‘PYEOF’
+import sys
+php = r”””<?php
+$files_dir = **DIR** . ‘/files’;
+$message   = ‘’;
 
-<?php
-$files_dir = __DIR__ . '/files';
-$message   = '';
-
-// Загрузка и шифрование файла
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['upload'])) {
-    $pass_file = '/etc/openssl_enc.pass';
-    $pass      = trim(file_get_contents($pass_file));
-    $tmp       = $_FILES['upload']['tmp_name'];
-    $name      = basename($_FILES['upload']['name']);
-    $enc_path  = $files_dir . '/' . $name . '.enc';
-    $cmd = "openssl enc -aes-256-cbc -pbkdf2 -in " . escapeshellarg($tmp)
-         . " -out " . escapeshellarg($enc_path)
-         . " -pass pass:" . escapeshellarg($pass) . " 2>&1";
-    exec($cmd, $out, $rc);
-    $message = $rc === 0
-        ? "<p class='ok'>Файл загружен и зашифрован: {$name}.enc</p>"
-        : "<p class='err'>Ошибка: " . implode(' ', $out) . "</p>";
+if ($_SERVER[‘REQUEST_METHOD’] === ‘POST’ && isset($_FILES[‘upload’])) {
+$pass_file = ‘/etc/openssl_enc.pass’;
+$pass      = trim(file_get_contents($pass_file));
+$tmp       = $_FILES[‘upload’][‘tmp_name’];
+$name      = basename($_FILES[‘upload’][‘name’]);
+$enc_path  = $files_dir . ‘/’ . $name . ‘.enc’;
+$cmd = “openssl enc -aes-256-cbc -pbkdf2 -in “ . escapeshellarg($tmp)
+. “ -out “ . escapeshellarg($enc_path)
+. “ -pass pass:” . escapeshellarg($pass) . “ 2>&1”;
+exec($cmd, $out, $rc);
+$message = $rc === 0
+? “<p class='ok'>Файл загружен и зашифрован: {$name}.enc</p>”
+: “<p class='err'>Ошибка: “ . implode(’ ’, $out) . “</p>”;
 }
 ?>
 
@@ -266,7 +265,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['upload'])) {
 </table>
 <br><small>Файлы зашифрованы (AES-256-CBC). Для расшифровки: <code>decrypt_file.sh &lt;файл.enc&gt;</code></small>
 </body></html>
-PHPEOF
+"""
+with open(sys.argv[1], 'w', encoding='utf-8') as f:
+    f.write(php)
+PYEOF
 
 systemctl restart $HTTPD_SERVICE
 info “PHP site created at http://<server-ip>/”

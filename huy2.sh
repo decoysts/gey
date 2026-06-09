@@ -10,17 +10,17 @@
 set -e # Прерывание при любой ошибке
 
 # --- НАСТРОЙКИ (VARIABLES) ---
-DB_ROOT_PASS="RootSecurePass2026"
+DB_ROOT_PASS="123456Admin"
 WP_DB="wordpress"
 WP_USER="wp_admin"
-WP_PASS="WpSuperPass123"
+WP_PASS="123456Admin"
 
 JOOMLA_DB="joomla"
 JOOMLA_USER="jm_admin"
-JOOMLA_PASS="JmSuperPass123"
+JOOMLA_PASS="123456Admin"
 
 GRAFANA_USER="grafana_reader"
-GRAFANA_PASS="GrafanaRead456"
+GRAFANA_PASS="123456Admin"
 
 SMB_USER="smbuser"
 SMB_PASS="smbpassword"
@@ -52,6 +52,32 @@ sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
 sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
 yum clean all > /dev/null 2>&1
 rm -rf /var/cache/yum
+# --- [0] УЛУЧШЕННЫЙ ФИКС EOL И РЕПОЗИТОРИЕВ ---
+echo "=== [0] Агрессивный фикс репозиториев для CentOS 7 EOL ==="
+
+# 1. Отключаем проверку SSL для yum (самая частая причина curl #35)
+echo "sslverify=false" >> /etc/yum.conf
+
+# 2. Исправляем базовые репозитории CentOS
+sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
+sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+
+# 3. ФИКС EPEL (ошибка curl #35 часто тут)
+# Удаляем старый epel и ставим его принудительно через http (не https)
+yum remove -y epel-release
+wget http://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-11.noarch.rpm
+rpm -ivh epel-release-7-11.noarch.rpm
+
+# 4. Фикс Remi
+sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/remi*.repo
+sed -i 's|#baseurl=http://rpms.remirepo.net|baseurl=http://rpms.remirepo.net|g' /etc/yum.repos.d/remi*.repo
+
+# 5. Очистка и обновление
+yum clean all
+rm -rf /var/cache/yum
+yum makecache
+yum update -y
+
 
 info "Установка базовых пакетов и EPEL..."
 yum update -y -q
@@ -65,10 +91,34 @@ success "Система подготовлена."
 # ==============================================================================
 # 1. LAMP СТЕК: APACHE, PHP 7.4, MARIADB
 # ==============================================================================
-info "Установка стека LAMP (PHP 7.4 через Remi)..."
-yum install -y -q https://rpms.remirepo.net/enterprise/remi-release-7.rpm
+# === [0] ФИКС EOL И РЕПОЗИТОРИЕВ ===
+# Отключаем SSL, чтобы yum не ломался на TLS-соединениях
+echo "sslverify=false" >> /etc/yum.conf
+
+# Принудительно меняем все репо на Vault
+sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
+sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
+
+# Ставим базовые утилиты только если их нет
+for pkg in epel-release wget unzip curl net-tools git; do
+    rpm -q $pkg > /dev/null || yum install -y $pkg
+done
+
+# === [1] LAMP И PHP (REMI) ===
+# Устанавливаем Remi, только если он еще не стоит
+if ! rpm -q remi-release > /dev/null; then
+    yum install -y https://rpms.remirepo.net/enterprise/remi-release-7.rpm
+fi
+
+# Включаем PHP 7.4 принудительно
 yum-config-manager --enable remi-php74 > /dev/null
-yum install -y -q httpd mariadb-server mariadb php php-cli php-mysqlnd php-gd php-mbstring php-xml php-json php-zip
+
+# Установка стека LAMP с проверкой
+# Добавляем --setopt=timeout=60, чтобы не падать по таймауту
+PACKAGES="httpd mariadb-server mariadb php php-cli php-mysqlnd php-gd php-mbstring php-xml php-json php-zip"
+for pkg in $PACKAGES; do
+    rpm -q $pkg > /dev/null || yum install -y --setopt=timeout=60 $pkg
+done
 
 systemctl enable --now httpd mariadb > /dev/null
 

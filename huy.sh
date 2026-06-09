@@ -189,27 +189,33 @@ mkdir -p “$FILES_DIR”
 chown -R apache:apache “$FILES_DIR” 2>/dev/null || chown -R www-data:www-data “$FILES_DIR” 2>/dev/null || true
 chmod 775 “$FILES_DIR”
 
-python3 - “$WEB_ROOT/index.php” <<‘PYEOF’
-import sys
-php = r”””<?php
-$files_dir = **DIR** . ‘/files’;
-$message   = ‘’;
+# Пишем index.php через printf — избегаем конфликта ?> с bash-редиректами.
 
-if ($_SERVER[‘REQUEST_METHOD’] === ‘POST’ && isset($_FILES[‘upload’])) {
-$pass_file = ‘/etc/openssl_enc.pass’;
-$pass      = trim(file_get_contents($pass_file));
-$tmp       = $_FILES[‘upload’][‘tmp_name’];
-$name      = basename($_FILES[‘upload’][‘name’]);
-$enc_path  = $files_dir . ‘/’ . $name . ‘.enc’;
-$cmd = “openssl enc -aes-256-cbc -pbkdf2 -in “ . escapeshellarg($tmp)
-. “ -out “ . escapeshellarg($enc_path)
-. “ -pass pass:” . escapeshellarg($pass) . “ 2>&1”;
-exec($cmd, $out, $rc);
-$message = $rc === 0
-? “<p class='ok'>Файл загружен и зашифрован: {$name}.enc</p>”
-: “<p class='err'>Ошибка: “ . implode(’ ’, $out) . “</p>”;
-}
-?>
+# В PHP закрывающий тег ?> необязателен, поэтому убираем его везде.
+
+PHP_FILE=”$WEB_ROOT/index.php”
+printf ‘%s\n’ ‘<?php' \
+'$files_dir = __DIR__ . "/files";' \
+'$message   = "";' \
+'if ($_SERVER["REQUEST_METHOD"] === "POST" && isset($_FILES["upload"])) {' \
+'    $pass_file = "/etc/openssl_enc.pass";' \
+'    $pass      = trim(file_get_contents($pass_file));' \
+'    $tmp       = $_FILES["upload"]["tmp_name"];' \
+'    $name      = basename($_FILES["upload"]["name"]);' \
+'    $enc_path  = $files_dir . "/" . $name . ".enc";' \
+'    $cmd = "openssl enc -aes-256-cbc -pbkdf2 -in " . escapeshellarg($tmp)' \
+'         . " -out " . escapeshellarg($enc_path)' \
+'         . " -pass pass:" . escapeshellarg($pass) . " 2>&1";' \
+'    exec($cmd, $out, $rc);' \
+'    $message = $rc === 0' \
+'        ? "<p class=ok>Файл загружен и зашифрован: " . htmlspecialchars($name) . ".enc</p>"' \
+'        : "<p class=err>Ошибка: " . implode(" ", $out) . "</p>";' \
+'}' \
+'?>’ > “$PHP_FILE”
+
+# HTML часть — здесь нет PHP-тегов, heredoc безопасен
+
+cat >> “$PHP_FILE” <<‘HTMLEOF’
 
 <!DOCTYPE html>
 
@@ -234,8 +240,7 @@ $message = $rc === 0
 </style>
 </head>
 <body>
-<h1>Файловый сервер — зашифрованные файлы</h1>
-
+<h1>Файловый сервер &#8212; зашифрованные файлы</h1>
 <h2>Загрузить файл</h2>
 <form method="POST" enctype="multipart/form-data">
   <div class="upload">
@@ -243,32 +248,32 @@ $message = $rc === 0
     <input type="submit" value="Загрузить и зашифровать">
   </div>
 </form>
-<?php echo $message; ?>
+HTMLEOF
 
-<h2>Список файлов</h2>
-<table>
-  <tr><th>Имя файла</th><th>Размер</th><th>Изменён</th><th>Действие</th></tr>
-  <?php
-  $files = glob($files_dir . '/*');
-  if (empty($files)) {
-      echo "<tr><td colspan='4'>Файлов нет.</td></tr>";
-  } else {
-      foreach ($files as $f) {
-          $name  = basename($f);
-          $size  = round(filesize($f)/1024, 2) . ' КБ';
-          $mtime = date('d.m.Y H:i:s', filemtime($f));
-          $url   = 'files/' . rawurlencode($name);
-          echo "<tr><td>$name</td><td>$size</td><td>$mtime</td><td><a href='$url'>скачать</a></td></tr>";
-      }
-  }
-  ?>
-</table>
-<br><small>Файлы зашифрованы (AES-256-CBC). Для расшифровки: <code>decrypt_file.sh &lt;файл.enc&gt;</code></small>
-</body></html>
-"""
-with open(sys.argv[1], 'w', encoding='utf-8') as f:
-    f.write(php)
-PYEOF
+# PHP блок вывода сообщения и таблицы — снова printf
+
+printf ‘%s\n’   
+‘<?php echo $message; ?>’   
+‘<h2>Список файлов</h2>’   
+‘<table>’   
+’  <tr><th>Имя файла</th><th>Размер</th><th>Изменён</th><th>Действие</th></tr>’   
+‘<?php' \
+'$files = glob($files_dir . "/*");' \
+'if (empty($files)) {' \
+'    echo "<tr><td colspan=4>Файлов нет.</td></tr>";' \
+'} else {' \
+'    foreach ($files as $f) {' \
+'        $name  = basename($f);' \
+'        $size  = round(filesize($f)/1024, 2) . " КБ";' \
+'        $mtime = date("d.m.Y H:i:s", filemtime($f));' \
+'        $url   = "files/" . rawurlencode($name);' \
+'        echo "<tr><td>" . htmlspecialchars($name) . "</td><td>$size</td><td>$mtime</td><td><a href=$url>скачать</a></td></tr>";' \
+'    }' \
+'}' \
+'?>’   
+‘</table>’   
+‘<br><small>Файлы зашифрованы (AES-256-CBC). Для расшифровки: <code>decrypt_file.sh <файл.enc></code></small>’   
+‘</body></html>’ >> “$PHP_FILE”
 
 systemctl restart $HTTPD_SERVICE
 info “PHP site created at http://<server-ip>/”

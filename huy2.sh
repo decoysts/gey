@@ -63,10 +63,24 @@ sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
 sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
 
 # 3. ФИКС EPEL (ошибка curl #35 часто тут)
-# Удаляем старый epel и ставим его принудительно через http (не https)
-yum remove -y epel-release
-wget http://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-11.noarch.rpm
-rpm -ivh epel-release-7-11.noarch.rpm
+# === ФИКС EPEL (максимально надежный способ) ===
+echo "=== Установка EPEL... ==="
+
+# 1. Сначала попробуем установить через стандартный репозиторий, но с отключенной проверкой SSL
+# Это часто срабатывает, если репозитории CentOS уже настроены на vault
+yum install -y epel-release --nogpgcheck
+
+# 2. Если вдруг пакет не нашелся, используем проверенную ссылку на зеркало
+if ! rpm -q epel-release > /dev/null; then
+    echo "EPEL не установлен, пробуем альтернативный путь..."
+    wget -O /tmp/epel.rpm http://dl.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm
+    yum install -y /tmp/epel.rpm
+fi
+
+# 3. После установки EPEL обязательно обновляем кэш
+yum clean all
+yum makecache
+
 
 # 4. Фикс Remi
 sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/remi*.repo

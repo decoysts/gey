@@ -3,11 +3,7 @@
 # ==============================================================================
 # PRO-AUTOMATION SCRIPT FOR LAB ENVIRONMENT (CentOS 7 EOL)
 # ==============================================================================
-# Этот скрипт настроен на максимальную автономность.
-# Все настройки вынесены в блок переменных ниже.
-# ==============================================================================
-
-set -e # Прерывание при любой ошибке
+set -e # Прерывание при критической ошибке
 
 # --- НАСТРОЙКИ (VARIABLES) ---
 DB_ROOT_PASS="123456Admin"
@@ -30,7 +26,7 @@ SMB_PASS="smbpassword"
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 function info() { echo -e "${CYAN}[*] $1${NC}"; }
 function success() { echo -e "${GREEN}[+] $1${NC}"; }
@@ -47,55 +43,45 @@ info "Инициализация среды развертывания..."
 # ==============================================================================
 # 0. ФИКС EOL И ПОДГОТОВКА СИСТЕМЫ
 # ==============================================================================
-info "Перенаправление репозиториев CentOS 7 на Vault..."
-sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
-sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
-yum clean all > /dev/null 2>&1
-rm -rf /var/cache/yum
-# --- [0] УЛУЧШЕННЫЙ ФИКС EOL И РЕПОЗИТОРИЕВ ---
-echo "=== [0] Агрессивный фикс репозиториев для CentOS 7 EOL ==="
+info "Агрессивный фикс репозиториев для CentOS 7 EOL..."
 
-# 1. Отключаем проверку SSL для yum (самая частая причина curl #35)
-echo "sslverify=false" >> /etc/yum.conf
-
-# 2. Исправляем базовые репозитории CentOS
-sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
-sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
-
-# 3. ФИКС EPEL (ошибка curl #35 часто тут)
-# === ФИКС EPEL (максимально надежный способ) ===
-echo "=== Установка EPEL... ==="
-
-# 1. Сначала попробуем установить через стандартный репозиторий, но с отключенной проверкой SSL
-# Это часто срабатывает, если репозитории CentOS уже настроены на vault
-yum install -y epel-release --nogpgcheck
-
-# 2. Если вдруг пакет не нашелся, используем проверенную ссылку на зеркало
-if ! rpm -q epel-release > /dev/null; then
-    echo "EPEL не установлен, пробуем альтернативный путь..."
-    wget -O /tmp/epel.rpm http://dl.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm
-    yum install -y /tmp/epel.rpm
+# 1. Отключаем проверку SSL для yum (чтобы не было curl #35)
+if ! grep -q "sslverify=false" /etc/yum.conf; then
+    echo "sslverify=false" >> /etc/yum.conf
 fi
 
-# 3. После установки EPEL обязательно обновляем кэш
-yum clean all
-yum makecache
+# 2. Перенаправляем базовые репозитории на Vault
+sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
+sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
 
+# 3. Установка EPEL через архивную прямую ссылку (если не установлен)
+if ! rpm -q epel-release > /dev/null; then
+    info "Установка EPEL через архив..."
+    wget -O /tmp/epel.rpm http://dl.fedoraproject.org/pub/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm || \
+    wget -O /tmp/epel.rpm http://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-11.noarch.rpm
+    yum install -y /tmp/epel.rpm --nogpgcheck
+fi
 
-# 4. Фикс Remi
-sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/remi*.repo
-sed -i 's|#baseurl=http://rpms.remirepo.net|baseurl=http://rpms.remirepo.net|g' /etc/yum.repos.d/remi*.repo
+# 4. Установка Remi репозитория (если не установлен)
+if ! rpm -q remi-release > /dev/null; then
+    info "Установка Remi репозитория..."
+    yum install -y http://rpms.remirepo.net/enterprise/remi-release-7.rpm --nogpgcheck
+fi
 
-# 5. Очистка и обновление
+# Фиксим файлы репозиториев Remi и EPEL на прямые ссылки
+sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/remi*.repo /etc/yum.repos.d/epel*.repo || true
+sed -i 's|#baseurl=http://rpms.remirepo.net|baseurl=http://rpms.remirepo.net|g' /etc/yum.repos.d/remi*.repo || true
+
+# 5. Сброс кэша
 yum clean all
 rm -rf /var/cache/yum
 yum makecache
-yum update -y
 
-
-info "Установка базовых пакетов и EPEL..."
-yum update -y -q
-yum install -y -q epel-release wget unzip curl net-tools git vim
+# 6. Установка базовых утилит (проверяем каждую, чтобы не выбивало Error: Nothing to do)
+info "Установка системных утилит..."
+for pkg in wget unzip curl net-tools git vim yum-utils device-mapper-persistent-data lvm2; do
+    rpm -q $pkg > /dev/null || yum install -y --setopt=timeout=60 $pkg
+done
 
 info "Отключение SELinux (для корректной работы Samba и Apache в лабе)..."
 setenforce 0 || true
@@ -105,36 +91,18 @@ success "Система подготовлена."
 # ==============================================================================
 # 1. LAMP СТЕК: APACHE, PHP 7.4, MARIADB
 # ==============================================================================
-# === [0] ФИКС EOL И РЕПОЗИТОРИЕВ ===
-# Отключаем SSL, чтобы yum не ломался на TLS-соединениях
-echo "sslverify=false" >> /etc/yum.conf
+info "Настройка PHP 7.4 и установка LAMP..."
 
-# Принудительно меняем все репо на Vault
-sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*
-sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*
-
-# Ставим базовые утилиты только если их нет
-for pkg in epel-release wget unzip curl net-tools git; do
-    rpm -q $pkg > /dev/null || yum install -y $pkg
-done
-
-# === [1] LAMP И PHP (REMI) ===
-# Устанавливаем Remi, только если он еще не стоит
-if ! rpm -q remi-release > /dev/null; then
-    yum install -y https://rpms.remirepo.net/enterprise/remi-release-7.rpm
-fi
-
-# Включаем PHP 7.4 принудительно
+# Включаем PHP 7.4 в менеджере репозиториев
 yum-config-manager --enable remi-php74 > /dev/null
 
-# Установка стека LAMP с проверкой
-# Добавляем --setopt=timeout=60, чтобы не падать по таймауту
+# Ставим стек веб-сервера
 PACKAGES="httpd mariadb-server mariadb php php-cli php-mysqlnd php-gd php-mbstring php-xml php-json php-zip"
 for pkg in $PACKAGES; do
     rpm -q $pkg > /dev/null || yum install -y --setopt=timeout=60 $pkg
 done
 
-systemctl enable --now httpd mariadb > /dev/null
+systemctl enable --now httpd mariadb
 
 info "Настройка баз данных и выдача прав..."
 mysqladmin -u root password "${DB_ROOT_PASS}" || true
@@ -162,8 +130,10 @@ success "Базы данных развернуты."
 # 2. WORDPRESS И КАСТОМНАЯ ТЕМА
 # ==============================================================================
 info "Развертывание WordPress..."
-wget -qO /tmp/latest.tar.gz https://wordpress.org/latest.tar.gz
-tar -xzf /tmp/latest.tar.gz -C /var/www/html/
+if [ ! -d "/var/www/html/wordpress" ]; then
+    wget -qO /tmp/latest.tar.gz https://wordpress.org/latest.tar.gz
+    tar -xzf /tmp/latest.tar.gz -C /var/www/html/
+fi
 
 cat <<EOF > /var/www/html/wordpress/wp-config.php
 <?php
@@ -208,8 +178,10 @@ success "WordPress настроен."
 # ==============================================================================
 info "Развертывание Joomla 3.x..."
 mkdir -p /var/www/html/joomla
-wget -qO /tmp/joomla.zip https://github.com/joomla/joomla-cms/releases/download/3.10.12/Joomla_3.10.12-Stable-Full_Package.zip
-unzip -q /tmp/joomla.zip -d /var/www/html/joomla/
+if [ ! -f "/var/www/html/joomla/index.php" ]; then
+    wget -qO /tmp/joomla.zip https://github.com/joomla/joomla-cms/releases/download/3.10.12/Joomla_3.10.12-Stable-Full_Package.zip
+    unzip -q /tmp/joomla.zip -d /var/www/html/joomla/
+fi
 
 info "Создание авторского шаблона для Joomla..."
 mkdir -p /var/www/html/joomla/templates/gothic-joomla
@@ -250,8 +222,8 @@ success "Joomla настроена."
 # 4. SAMBA НАСТРОЙКА (ДОСТУП К ФАЙЛАМ CMS)
 # ==============================================================================
 info "Конфигурация сервера Samba..."
-yum install -y -q samba samba-client
-mv /etc/samba/smb.conf /etc/samba/smb.conf.bak || true
+rpm -q samba || yum install -y -q samba samba-client
+[ -f /etc/samba/smb.conf ] && mv /etc/samba/smb.conf /etc/samba/smb.conf.bak
 
 cat <<EOF > /etc/samba/smb.conf
 [global]
@@ -279,10 +251,10 @@ cat <<EOF > /etc/samba/smb.conf
     directory mask = 0755
 EOF
 
-useradd -M -s /sbin/nologin ${SMB_USER} || true
+id -u ${SMB_USER} >/dev/null 2>&1 || useradd -M -s /sbin/nologin ${SMB_USER}
 (echo "${SMB_PASS}"; echo "${SMB_PASS}") | smbpasswd -s -a ${SMB_USER} > /dev/null
 
-systemctl enable --now smb nmb > /dev/null
+systemctl enable --now smb nmb
 success "Samba-шары активированы."
 
 # ==============================================================================
@@ -305,8 +277,9 @@ EOF
 cat <<EOF > /root/restore_latest.sh
 #!/bin/bash
 echo "Внимание! Это сотрет текущие данные и восстановит последние бэкапы."
-WP_ARCH=\$(ls -t /share/backups/wp_backup_*.tar.gz | head -n1)
-WP_SQL=\$(ls -t /share/backups/wp_db_*.sql | head -n1)
+WP_ARCH=\$(ls -t /share/backups/wp_backup_*.tar.gz 2>/dev/null | head -n1)
+WP_SQL=\$(ls -t /share/backups/wp_db_*.sql 2>/dev/null | head -n1)
+if [ -z "\$WP_ARCH" ]; then echo "Бэкапы не найдены!"; exit 1; fi
 rm -rf /var/www/html/wordpress
 tar -xzf \$WP_ARCH -C /var/www/html/
 mysql -u root -p"${DB_ROOT_PASS}" ${WP_DB} < \$WP_SQL
@@ -321,8 +294,10 @@ success "Утилиты бэкапа созданы в /root/"
 # 6. GRAFANA: PROVISIONING ДАШБОРДОВ
 # ==============================================================================
 info "Развертывание и провижининг Grafana..."
-wget -q https://dl.grafana.com/oss/release/grafana-10.0.3-1.x86_64.rpm
-yum localinstall -y -q grafana-10.0.3-1.x86_64.rpm > /dev/null
+if ! rpm -q grafana > /dev/null; then
+    wget -q https://dl.grafana.com/oss/release/grafana-10.0.3-1.x86_64.rpm
+    yum localinstall -y grafana-10.0.3-1.x86_64.rpm --nogpgcheck
+fi
 
 cat <<EOF > /etc/grafana/provisioning/datasources/cms_sources.yaml
 apiVersion: 1
@@ -384,22 +359,24 @@ cat <<EOF > /var/lib/grafana/dashboards/cms_stats.json
 }
 EOF
 
-systemctl enable --now grafana-server > /dev/null
+systemctl enable --now grafana-server
 success "Мониторинг Grafana активирован."
 
 # ==============================================================================
 # 7. DOCKER СТЕК
 # ==============================================================================
 info "Развертывание контейнерной среды Docker..."
-yum install -y -q yum-utils device-mapper-persistent-data lvm2
-yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo > /dev/null
-yum install -y -q docker-ce docker-ce-cli containerd.io
+if ! rpm -q docker-ce > /dev/null; then
+    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo > /dev/null
+    yum install -y --setopt=timeout=60 docker-ce docker-ce-cli containerd.io
+fi
 
-systemctl enable --now docker > /dev/null
+systemctl enable --now docker
 
 mkdir -p /var/www/docker-hello
 echo "<h1 style='font-family: monospace; color: green; background: black; padding: 20px;'>> DOCKER CONTAINER HTTPD UP AND RUNNING</h1>" > /var/www/docker-hello/index.html
 
+docker rm -f lab-apache-node >/dev/null 2>&1 || true
 docker run -d --name lab-apache-node -p 8080:80 -v /var/www/docker-hello:/usr/local/apache2/htdocs/ --restart unless-stopped httpd:alpine > /dev/null
 success "Docker контейнер запущен на порту 8080."
 
@@ -407,14 +384,15 @@ success "Docker контейнер запущен на порту 8080."
 # 8. БЕЗОПАСНОСТЬ (FIREWALL)
 # ==============================================================================
 info "Настройка сетевого экрана (Firewalld)..."
-yum install -y -q firewalld
-systemctl enable --now firewalld > /dev/null
+rpm -q firewalld || yum install -y firewalld
+systemctl enable --now firewalld
 
-firewall-cmd --permanent --zone=public --add-service=http > /dev/null
-firewall-cmd --permanent --zone=public --add-service=samba > /dev/null
-firewall-cmd --permanent --zone=public --add-port=3000/tcp > /dev/null
-firewall-cmd --permanent --zone=public --add-port=8080/tcp > /dev/null
+firewall-cmd --permanent --zone=public --add-service=http > /dev/null 2>&1 || true
+firewall-cmd --permanent --zone=public --add-service=samba > /dev/null 2>&1 || true
+firewall-cmd --permanent --zone=public --add-port=3000/tcp > /dev/null 2>&1 || true
+firewall-cmd --permanent --zone=public --add-port=8080/tcp > /dev/null 2>&1 || true
 firewall-cmd --reload > /dev/null
+
 success "Правила Firewall применены."
 
 echo -e "\n${GREEN}==============================================================================${NC}"
